@@ -2,12 +2,13 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with three providers:
+Provides speech-to-text transcription with four providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
+  - **mlx** (fast, local) — MLX Audio API, requires MLX-audio server running.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -73,6 +74,8 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
+DEFAULT_MLX_ENDPOINT = os.getenv("STT_MLX_ENDPOINT", "http://localhost:8000/v1/audio/transcriptions")
+DEFAULT_MLX_MODEL = "mlx-community/parakeet-tdt-0.6b-v3
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
@@ -81,6 +84,7 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 # Known model sets for auto-correction
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
+MLX_MODELS = {"mlx-community/parakeet-tdt-0.6b-v3", "mlx-community/whisper-large-v3-turbo-asr-fp16"}
 
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
@@ -506,6 +510,82 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
 
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Provider: MLX Audio (local, fast STT)
+# ---------------------------------------------------------------------------
+
+
+def _check_mlx_available() -> bool:
+    """Check if MLX-audio API server is accessible."""
+    try:
+        endpoint = DEFAULT_MLX_ENDPOINT.split("/v1/")[0]
+        import urllib.request
+        with urllib.request.urlopen(endpoint, timeout=5) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+
+def _transcribe_mlx(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using MLX-audio STT API.
+
+    Args:
+        file_path: Path to audio file.
+        model_name: MLX model to use (e.g., "mlx-community/parakeet-tdt-0.6b-v3").
+
+    Returns:
+        dict with success, transcript, and error keys.
+    """
+    import json as json_lib
+
+    if not model_name or model_name in OPENAI_MODELS or model_name in GROQ_MODELS:
+        model_name = DEFAULT_MLX_MODEL
+
+    endpoint = DEFAULT_MLX_ENDPOINT
+
+    try:
+        result = subprocess.run(
+            [
+                "curl",
+                "-X", "POST",
+                endpoint,
+                "-F", f"file=@{file_path}",
+                "-F", f"model={model_name}",
+                "--silent",
+                "--show-error",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        if result.returncode != 0:
+            logger.error("MLX transcription failed with exit code %d: %s",
+                        result.returncode, result.stderr)
+            return {"success": False, "transcript": "",
+                    "error": f"Curl request failed: {result.stderr}"}
+
+        response_data = json_lib.loads(result.stdout)
+        transcript = response_data.get("text", "").strip()
+
+        if not transcript:
+            return {"success": False, "transcript": "", "error": "Empty transcription response"}
+
+        logger.info("Transcribed %s via MLX Audio API (%s, %d chars)",
+                    Path(file_path).name, model_name, len(transcript))
+
+        return {"success": True, "transcript": transcript, "provider": "mlx"}
+
+    except subprocess.TimeoutExpired:
+        return {"success": False, "transcript": "", "error": "MLX transcription timeout"}
+    except json_lib.JSONDecodeError as e:
+        return {"success": False, "transcript": "", "error": f"Invalid JSON response: {e}"}
+    except Exception as e:
+        logger.error("MLX transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -556,6 +636,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
         )
         return _transcribe_local_command(file_path, model_name)
+
+    if provider == "mlx":
+        mlx_cfg = stt_config.get("mlx", {})
+        model_name = model or mlx_cfg.get("model", DEFAULT_MLX_MODEL)
+        return _transcribe_mlx(file_path, model_name)
 
     if provider == "groq":
         model_name = model or DEFAULT_GROQ_STT_MODEL
