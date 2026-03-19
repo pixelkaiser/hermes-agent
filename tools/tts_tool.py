@@ -481,7 +481,6 @@ def _generate_mlx_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     Raises:
         RuntimeError: If MLX-audio API is not available or synthesis fails.
     """
-    import urllib.request
     import json as json_lib
 
     mlx_config = tts_config.get("mlx", {})
@@ -530,33 +529,39 @@ def _generate_mlx_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     logger.debug("Using model: %s, ref_audio: %s", model, ref_audio)
 
     try:
-        data = json_lib.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            endpoint,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        # Use curl as a workaround for urllib's inability to handle chunked transfer encoding
+        # from MLX Audio server. curl handles this correctly.
+        subprocess.run(
+            [
+                "curl",
+                "-X", "POST",
+                endpoint,
+                "-H", "Content-Type: application/json",
+                "-d", json_lib.dumps(payload),
+                "-o", output_path,
+                "--silent",  # Don't show progress
+                "--show-error",  # Show errors if any
+            ],
+            check=True,
+            timeout=180,  # Give MLX Audio time to synthesize (longer than default)
         )
 
-        with urllib.request.urlopen(req, timeout=120) as response:
-            if response.status != 200:
-                error_body = response.read().decode("utf-8", errors="ignore")
-                raise RuntimeError(
-                    f"MLX-audio API returned status {response.status}: {error_body}"
-                )
+        # Verify the file was created and contains data
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            raise RuntimeError("MLX-audio generated an empty file")
 
-            # Write audio content to file
-            with open(output_path, "wb") as f:
-                f.write(response.read())
+        logger.info("MLX-audio generated %s bytes", os.path.getsize(output_path))
+        return output_path
 
-            logger.info("MLX-audio generated %s bytes", os.path.getsize(output_path))
-            return output_path
-
-    except urllib.error.URLError as e:
-        raise RuntimeError(
-            f"MLX-audio API not reachable at {endpoint}. "
-            f"Make sure the MLX-audio server is running. Error: {e}"
-        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("MLX-audio API timeout - synthesis took too long")
+    except subprocess.CalledProcessError as e:
+        error_msg = f"MLX-audio curl request failed with exit code {e.returncode}"
+        if e.stderr:
+            error_msg += f": {e.stderr.decode('utf-8', errors='ignore')}"
+        raise RuntimeError(error_msg)
+    except FileNotFoundError:
+        raise RuntimeError("curl binary not found in PATH - required for MLX-audio TTS")
     except Exception as e:
         raise RuntimeError(f"MLX-audio synthesis failed: {e}")
 
