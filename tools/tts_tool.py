@@ -8,6 +8,7 @@ Supports five TTS providers:
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
+- MLX Audio (local, free, no API key): Voice cloning API, needs MLX-audio server running
 
 Output formats:
 - Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
@@ -82,6 +83,10 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-2.8-hd"
 DEFAULT_MINIMAX_VOICE_ID = "English_Graceful_Lady"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
+DEFAULT_MLX_MODEL = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"
+DEFAULT_MLX_ENDPOINT = "http://localhost:8000/v1/audio/speech"
+DEFAULT_MLX_LANG_CODE = "German"
+DEFAULT_MLX_SPEED = 1.0
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -442,6 +447,121 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
 
 
 # ===========================================================================
+# Provider: MLX Audio (local voice cloning API)
+# ===========================================================================
+
+def _check_mlx_available() -> bool:
+    """Check if MLX-audio API server is accessible."""
+    import urllib.request
+    try:
+        # Try to connect to the API endpoint
+        endpoint = DEFAULT_MLX_ENDPOINT
+        # Just check if the base server is reachable
+        parts = endpoint.split("/v1/")[0]
+        with urllib.request.urlopen(parts, timeout=5) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+
+def _generate_mlx_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using MLX-audio voice cloning API.
+
+    Sends a POST request to the MLX-audio server running on localhost.
+    Supports voice cloning with reference audio and text.
+
+    Args:
+        text: Text to convert to speech.
+        output_path: Where to save the audio file.
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+
+    Raises:
+        RuntimeError: If MLX-audio API is not available or synthesis fails.
+    """
+    import urllib.request
+    import json as json_lib
+
+    mlx_config = tts_config.get("mlx", {})
+    endpoint = mlx_config.get("endpoint", DEFAULT_MLX_ENDPOINT)
+    model = mlx_config.get("model", DEFAULT_MLX_MODEL)
+    ref_audio = mlx_config.get("ref_audio", "")
+    ref_text = mlx_config.get("ref_text", "")
+    lang_code = mlx_config.get("lang_code", DEFAULT_MLX_LANG_CODE)
+    speed = mlx_config.get("speed", DEFAULT_MLX_SPEED)
+
+    # Validate required fields
+    if not ref_audio or not ref_text:
+        raise ValueError(
+            "MLX-audio requires 'ref_audio' and 'ref_text' to be configured. "
+            "Add them to your ~/.hermes/config.yaml under 'tts.mlx'."
+        )
+
+    # If running in Docker, handle path mapping and endpoint
+    in_docker = os.path.exists("/.dockerenv")
+    if in_docker:
+        # Update endpoint to use host.docker.internal
+        endpoint = endpoint.replace("localhost", "host.docker.internal")
+        endpoint = endpoint.replace("127.0.0.1", "host.docker.internal")
+
+        # Map reference audio path if it's under /Users/te/dev/mlx-audio
+        # to /root/mlxAudio/tts (Docker volume mount)
+        if ref_audio.startswith("/Users/te/dev/mlx-audio/"):
+            ref_audio = ref_audio.replace("/Users/te/dev/mlx-audio/", "/root/mlxAudio/tts/")
+            logger.debug("Mapped ref_audio path for Docker: %s", ref_audio)
+
+    # Determine output format from file extension
+    response_format = "mp3" if output_path.endswith(".mp3") else "mp3"
+
+    # Build request payload
+    payload = {
+        "model": model,
+        "input": text,
+        "ref_audio": ref_audio,
+        "ref_text": ref_text,
+        "lang_code": lang_code,
+        "speed": speed,
+        "response_format": response_format,
+    }
+
+    logger.debug("MLX-audio request to %s with text length %d", endpoint, len(text))
+    logger.debug("Using model: %s, ref_audio: %s", model, ref_audio)
+
+    try:
+        data = json_lib.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            endpoint,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=120) as response:
+            if response.status != 200:
+                error_body = response.read().decode("utf-8", errors="ignore")
+                raise RuntimeError(
+                    f"MLX-audio API returned status {response.status}: {error_body}"
+                )
+
+            # Write audio content to file
+            with open(output_path, "wb") as f:
+                f.write(response.read())
+
+            logger.info("MLX-audio generated %s bytes", os.path.getsize(output_path))
+            return output_path
+
+    except urllib.error.URLError as e:
+        raise RuntimeError(
+            f"MLX-audio API not reachable at {endpoint}. "
+            f"Make sure the MLX-audio server is running. Error: {e}"
+        )
+    except Exception as e:
+        raise RuntimeError(f"MLX-audio synthesis failed: {e}")
+
+
+# ===========================================================================
 # Main tool function
 # ===========================================================================
 def text_to_speech_tool(
@@ -539,6 +659,17 @@ def text_to_speech_tool(
             logger.info("Generating speech with NeuTTS (local)...")
             _generate_neutts(text, file_str, tts_config)
 
+        elif provider == "mlx":
+            if not _check_mlx_available():
+                return json.dumps({
+                    "success": False,
+                    "error": "MLX-audio provider selected but the API server is not reachable. "
+                             "Make sure the MLX-audio server is running at localhost:8000 "
+                             "and ref_audio/ref_text are configured."
+                }, ensure_ascii=False)
+            logger.info("Generating speech with MLX-audio (local)...")
+            _generate_mlx_tts(text, file_str, tts_config)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -566,7 +697,7 @@ def text_to_speech_tool(
                 return json.dumps({
                     "success": False,
                     "error": "No TTS provider available. Install edge-tts (pip install edge-tts) "
-                             "or set up NeuTTS for local synthesis."
+                             "or set up NeuTTS or MLX-audio for local synthesis."
                 }, ensure_ascii=False)
 
         # Check the file was actually created
@@ -577,9 +708,9 @@ def text_to_speech_tool(
             }, ensure_ascii=False)
 
         # Try Opus conversion for Telegram compatibility
-        # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
+        # Edge TTS, MLX-audio, and MiniMax output MP3, NeuTTS outputs WAV — all need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts", "minimax") and not file_str.endswith(".ogg"):
+        if provider in ("edge", "neutts", "minimax", "mlx") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
