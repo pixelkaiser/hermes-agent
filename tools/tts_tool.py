@@ -450,13 +450,26 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
 # Provider: MLX Audio (local voice cloning API)
 # ===========================================================================
 
-def _check_mlx_available() -> bool:
-    """Check if MLX-audio API server is accessible."""
+def _check_mlx_available(tts_config: Dict[str, Any] = None) -> bool:
+    """Check if MLX-audio API server is accessible.
+
+    Args:
+        tts_config: TTS config dict containing MLX endpoint. If None, loads from config.
+
+    Returns:
+        True if the configured MLX-audio server is reachable.
+    """
     import urllib.request
     try:
+        # Load config if not provided
+        if tts_config is None:
+            tts_config = _load_tts_config()
+
+        # Use configured endpoint, falling back to default
+        mlx_config = tts_config.get("mlx", {})
+        endpoint = mlx_config.get("endpoint", DEFAULT_MLX_ENDPOINT)
+
         # Try to connect to the API endpoint
-        endpoint = DEFAULT_MLX_ENDPOINT
-        # Just check if the base server is reachable
         parts = endpoint.split("/v1/")[0]
         with urllib.request.urlopen(parts, timeout=5) as response:
             return response.status == 200
@@ -665,11 +678,11 @@ def text_to_speech_tool(
             _generate_neutts(text, file_str, tts_config)
 
         elif provider == "mlx":
-            if not _check_mlx_available():
+            if not _check_mlx_available(tts_config):
                 return json.dumps({
                     "success": False,
                     "error": "MLX-audio provider selected but the API server is not reachable. "
-                             "Make sure the MLX-audio server is running at localhost:8000 "
+                             f"Make sure the MLX-audio server is running at {tts_config.get('mlx', {}).get('endpoint', 'localhost:8000')} "
                              "and ref_audio/ref_text are configured."
                 }, ensure_ascii=False)
             logger.info("Generating speech with MLX-audio (local)...")
@@ -790,6 +803,8 @@ def check_tts_requirements() -> bool:
     if os.getenv("MINIMAX_API_KEY"):
         return True
     if _check_neutts_available():
+        return True
+    if _check_mlx_available():
         return True
     return False
 

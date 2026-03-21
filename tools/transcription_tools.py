@@ -75,7 +75,7 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 DEFAULT_MLX_ENDPOINT = os.getenv("STT_MLX_ENDPOINT", "http://localhost:8000/v1/audio/transcriptions")
-DEFAULT_MLX_MODEL = "mlx-community/parakeet-tdt-0.6b-v3
+DEFAULT_MLX_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}

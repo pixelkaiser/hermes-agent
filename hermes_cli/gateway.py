@@ -930,7 +930,7 @@ def generate_launchd_plist() -> str:
     
     <key>WorkingDirectory</key>
     <string>{working_dir}</string>
-    
+
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
@@ -940,7 +940,7 @@ def generate_launchd_plist() -> str:
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
     </dict>
-    
+
     <key>RunAtLoad</key>
     <true/>
     

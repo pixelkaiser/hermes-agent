@@ -384,9 +384,12 @@ class VoiceReceiver:
             f.write(pcm_data)
             pcm_path = f.name
         try:
+            ffmpeg_path = "/opt/homebrew/bin/ffmpeg"
+            if not os.path.exists(ffmpeg_path):
+                ffmpeg_path = "ffmpeg"  # fallback to PATH
             subprocess.run(
                 [
-                    "ffmpeg", "-y", "-loglevel", "error",
+                    ffmpeg_path, "-y", "-loglevel", "error",
                     "-f", "s16le",
                     "-ar", str(src_rate),
                     "-ac", str(src_channels),
@@ -1043,7 +1046,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.error("Voice playback error: %s", error)
                 loop.call_soon_threadsafe(done.set)
 
-            source = discord.FFmpegPCMAudio(audio_path)
+            source = discord.FFmpegPCMAudio(audio_path, executable="/opt/homebrew/bin/ffmpeg")
             source = discord.PCMVolumeTransformer(source, volume=1.0)
             vc.play(source, after=_after)
             try:
