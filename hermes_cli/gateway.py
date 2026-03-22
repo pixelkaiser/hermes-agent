@@ -2079,6 +2079,7 @@ def gateway_command(args):
             try:
                 systemd_restart(system=system)
                 service_available = True
+                return  # SUCCESS: systemd_restart handles everything
             except subprocess.CalledProcessError:
                 pass
         elif is_macos() and get_launchd_plist_path().exists():
@@ -2086,9 +2087,10 @@ def gateway_command(args):
             try:
                 launchd_restart()
                 service_available = True
+                return  # SUCCESS: launchd_restart handles everything
             except subprocess.CalledProcessError:
                 pass
-        
+
         if not service_available:
             # systemd/launchd restart failed — check if linger is the issue
             if is_linux():
