@@ -56,6 +56,7 @@ def cron_list(show_all: bool = False):
     print()
 
     for job in jobs:
+        # Show full 12-char IDs by default to avoid confusion with run/edit commands
         job_id = job.get("id", "?")
         name = job.get("name", "(unnamed)")
         schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
