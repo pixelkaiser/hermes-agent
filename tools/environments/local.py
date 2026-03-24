@@ -269,6 +269,38 @@ _SANE_PATH = (
 )
 
 
+def _get_hermes_venv_path() -> str:
+    """Get the Hermes venv's bin directory PATH if running from venv, otherwise empty string."""
+    # If Hermes is running from a venv, ensure subprocesses use the same Python
+    venv_bin = ""
+    
+    # First try VIRTUAL_ENV environment variable
+    if os.environ.get("VIRTUAL_ENV"):
+        venv_bin = os.path.join(os.environ["VIRTUAL_ENV"], "bin")
+    else:
+        # Fallback: detect venv from sys.executable
+        # sys.executable points to the actual Python binary being used
+        try:
+            import sys
+            exe_path = sys.executable
+            # Expected: /path/to/hermes-venv/bin/python
+            # Extract /path/to/hermes-venv/bin
+            if exe_path and os.path.exists(exe_path):
+                exe_dir = os.path.dirname(exe_path)
+                # Check if this looks like a venv (has pyvenv.cfg or activate script)
+                venv_root = os.path.dirname(exe_dir)
+                if os.path.exists(os.path.join(venv_root, "pyvenv.cfg")):
+                    venv_bin = exe_dir
+        except Exception:
+            pass
+    
+    # Verify the venv bin exists
+    if venv_bin and os.path.isdir(venv_bin):
+        return venv_bin
+    
+    return ""
+
+
 def _make_run_env(env: dict) -> dict:
     """Build a run environment with a sane PATH and provider-var stripping."""
     try:
@@ -284,9 +316,21 @@ def _make_run_env(env: dict) -> dict:
             run_env[real_key] = v
         elif k not in _HERMES_PROVIDER_ENV_BLOCKLIST or _is_passthrough(k):
             run_env[k] = v
+    
+    # CRITICAL: If Hermes is running in a venv, ensure subprocesses use the same Python
+    hermes_venv_bin = _get_hermes_venv_path()
     existing_path = run_env.get("PATH", "")
+    
+    # Build PATH with Hermes venv bin FIRST, then existing PATH, then sane fallback
+    path_parts = []
+    if hermes_venv_bin:
+        path_parts.append(hermes_venv_bin)
+    if existing_path:
+        path_parts.append(existing_path)
     if "/usr/bin" not in existing_path.split(":"):
-        run_env["PATH"] = f"{existing_path}:{_SANE_PATH}" if existing_path else _SANE_PATH
+        path_parts.append(_SANE_PATH)
+    
+    run_env["PATH"] = ":".join(path_parts) if path_parts else _SANE_PATH
     return run_env
 
 
